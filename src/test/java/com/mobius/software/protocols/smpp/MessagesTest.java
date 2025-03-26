@@ -790,6 +790,136 @@ public class MessagesTest extends TestsBase
 		stopClient(connectionID2);
 	}
 	
+	@Test
+	public void testSingleMessaging() throws ClassNotFoundException, GeneralSecurityException, IOException, SmppChannelException
+	{
+		ConcurrentHashMap<String, Semaphore> connectSemaphores = new ConcurrentHashMap<String, Semaphore>();
+		ConcurrentHashMap<String, Semaphore> messagesSemaphores = new ConcurrentHashMap<String, Semaphore>();
+
+		String connectionID1 = (new ObjectId()).toHexString();
+		String username1 = "username1";
+		String password1 = "01020304";
+		connectSemaphores.put(connectionID1, new Semaphore(0));
+		messagesSemaphores.put(connectionID1, new Semaphore(0));
+
+		LocalConnectionListener connectionListener = new LocalConnectionListener(connectSemaphores, connectSemaphores, null, messagesSemaphores, messagesSemaphores, messagesSemaphores, null);
+		setConnectionListener(connectionListener);
+
+		startClient(connectionID1, false, false, true, 1, 1, username1, password1);
+
+		try
+		{
+			connectSemaphores.get(connectionID1).tryAcquire(1, (long) (bindTimeout * 1.5), TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex)
+		{
+
+		}
+		assertEquals(getUsedClients(connectionID1), new Integer(1));
+
+		Long expirationDate = System.currentTimeMillis() + 24 * 60 * 60 * 1000;
+		expirationDate = expirationDate - expirationDate % 100;
+
+		String messageID = new ObjectId().toHexString();
+		byte[] data = ("hello world ").getBytes();
+
+		SubmitSm message = generateSubmitSm(connectionID1, messageID, data, null, Encoding.OCTET_UNSPECIFIED_2, "010203", NumberPlan.E164, TypeOfNetwork.INTERNATIONAL, "010205", NumberPlan.E164, TypeOfNetwork.INTERNATIONAL, ReceiptRequested.REQUESTED, IntermediateNotificationRequested.NOT_REQUESTED, SmeAckRequested.NOT_REQUESTED, expirationDate, Priority.NORMAL, connectionListener);
+		MessageStatus status = MessageStatus.OK;
+		DeliveryStatus delivery = DeliveryStatus.DELIVERED;
+		Integer errorCode = 0;
+
+		// waiting for bind completed on client side
+		try
+		{
+			Thread.sleep(1000);
+		}
+		catch (Exception ex)
+		{
+
+		}
+		
+		// send message from client
+		sendMessage(connectionID1, messageID, message);
+
+		try
+		{
+			messagesSemaphores.get(connectionID1).tryAcquire(1, (long) (requestTimeout * 1.5), TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex)
+		{
+
+		}
+
+		ConcurrentLinkedQueue<MessageRequestWrapper> requests = getRequests(connectionID1);
+		MessageRequestWrapper currRequest = requests.poll();
+		assertNotNull(currRequest);
+		String remoteMessageID = new ObjectId().toHexString();
+		assertArrayEquals(data, currRequest.getData());
+		RequestProcessingResult result = new RequestProcessingResult(Arrays.asList(new String[] { remoteMessageID }), status);
+		
+		// send response from remote server
+		currRequest.getResponse().onResult(result, null);
+
+		try
+		{
+			messagesSemaphores.get(connectionID1).tryAcquire(1, (long) (requestTimeout * 1.5), TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex)
+		{
+
+		}
+
+		ConcurrentLinkedQueue<ResponseWrapper> responses = getResponses(connectionID1);
+		ResponseWrapper currResponseWrapper = responses.poll();
+		assertNotNull(currResponseWrapper);
+		assertEquals(currResponseWrapper.getOriginalMessageID(), messageID);
+		assertEquals(currResponseWrapper.getRemoteMessageID(), remoteMessageID);
+		assertEquals(currResponseWrapper.getStatus(), status);
+
+		// send delivery
+		sendDelivery(connectionID1, remoteMessageID, generateDeliverSm(connectionID1, remoteMessageID, "Message Delivered".getBytes(), null, errorCode, delivery, Encoding.OCTET_UNSPECIFIED_2, message.getSourceAddress().getAddress(), NumberPlan.fromInt(message.getSourceAddress().getNpi()), TypeOfNetwork.fromInt(message.getSourceAddress().getTon()), message.getDestAddress().getAddress(), NumberPlan.fromInt(message.getDestAddress().getNpi()), TypeOfNetwork.fromInt(message.getDestAddress().getTon()), connectionListener));
+
+		try
+		{
+			messagesSemaphores.get(connectionID1).tryAcquire(1, (long) (requestTimeout * 1.5), TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex)
+		{
+
+		}
+
+		requests = getRequests(connectionID1);
+		currRequest = requests.poll();
+		assertNotNull(currRequest.getReportData());
+		assertEquals(currRequest.getReportData().getMessageID(), remoteMessageID);
+		assertEquals(currRequest.getReportData().getErrorCode(), errorCode);
+		assertTrue(Arrays.equals(currRequest.getReportData().getData(), "Message Delivered".getBytes()));
+		assertEquals(currRequest.getReportData().getEncoding(), Encoding.OCTET_UNSPECIFIED_2);
+		assertEquals(currRequest.getReportData().getDeliveryStatus(), delivery);
+
+		result = new RequestProcessingResult(Arrays.asList(new String[] { remoteMessageID }), status);
+		// send response from client
+		currRequest.getResponse().onResult(result, null);
+
+		try
+		{
+			messagesSemaphores.get(connectionID1).tryAcquire(1, (long) (requestTimeout * 1.5), TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex)
+		{
+		}
+
+		responses = getResponses(connectionID1);
+		currResponseWrapper = responses.poll();
+		assertNotNull(currResponseWrapper);
+		assertEquals(currResponseWrapper.getOriginalMessageID(), remoteMessageID);
+		assertNull(currResponseWrapper.getRemoteMessageID());
+		assertEquals(currResponseWrapper.getStatus(), status);
+
+		resetConnectionListener();
+		stopClient(connectionID1);
+	}
+	
 	private SubmitSm generateSubmitSm(String uniqueID, String messageID, byte[] data,byte[] udh, Encoding messageEncoding, String fromDigits,NumberPlan fromNp, TypeOfNetwork fromTon, String toDigits,NumberPlan toNp, TypeOfNetwork toTon, ReceiptRequested rr,IntermediateNotificationRequested inr,SmeAckRequested smeAr,Long expirationDate, Priority priority, ConnectionListener listener)
 	{
 		SubmitSm submitSm=new SubmitSm();
